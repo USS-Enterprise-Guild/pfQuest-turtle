@@ -3,6 +3,9 @@ local loc = GetLocale()
 local dbs = { "items", "quests", "quests-itemreq", "objects", "units", "zones", "professions", "areatrigger", "refloot" }
 local noloc = { "items", "quests", "objects", "units" }
 
+-- Count turtle quests before cleanup (for cache invalidation)
+local pfQuest_turtle_questcount = 0
+
 -- Patch databases to merge TurtleWoW data
 local function patchtable(base, diff)
   for k, v in pairs(diff) do
@@ -26,22 +29,41 @@ local loc_core, loc_update
 for _, db in pairs(dbs) do
   if pfDB[db]["data-turtle"] then
     patchtable(pfDB[db]["data"], pfDB[db]["data-turtle"])
+    -- Count quests during merge (before cleanup)
+    if db == "quests" then
+      for _ in pairs(pfDB[db]["data-turtle"]) do
+        pfQuest_turtle_questcount = pfQuest_turtle_questcount + 1
+      end
+    end
+    pfDB[db]["data-turtle"] = nil  -- Cleanup immediately after merge
   end
 
   for loc, _ in pairs(pfDB.locales) do
-    if pfDB[db][loc] and pfDB[db][loc.."-turtle"] then
-      loc_update = pfDB[db][loc.."-turtle"] or pfDB[db]["enUS-turtle"]
+    local loc_turtle = loc .. "-turtle"
+    if pfDB[db][loc] and pfDB[db][loc_turtle] then
+      loc_update = pfDB[db][loc_turtle] or pfDB[db]["enUS-turtle"]
       patchtable(pfDB[db][loc], loc_update)
     end
+    pfDB[db][loc_turtle] = nil  -- Cleanup all locale-turtle tables
   end
 end
 
 loc_core = pfDB["professions"][loc] or pfDB["professions"]["enUS"]
 loc_update = pfDB["professions"][loc.."-turtle"] or pfDB["professions"]["enUS-turtle"]
 if loc_update then patchtable(loc_core, loc_update) end
+-- Cleanup professions locale tables
+for loc, _ in pairs(pfDB.locales) do
+  pfDB["professions"][loc.."-turtle"] = nil
+end
 
-if pfDB["minimap-turtle"] then patchtable(pfDB["minimap"], pfDB["minimap-turtle"]) end
-if pfDB["meta-turtle"] then patchtable(pfDB["meta"], pfDB["meta-turtle"]) end
+if pfDB["minimap-turtle"] then
+  patchtable(pfDB["minimap"], pfDB["minimap-turtle"])
+  pfDB["minimap-turtle"] = nil
+end
+if pfDB["meta-turtle"] then
+  patchtable(pfDB["meta"], pfDB["meta-turtle"])
+  pfDB["meta-turtle"] = nil
+end
 
 -- Detect german client patch and switch some databases
 if TURTLE_DE_PATCH then
@@ -74,39 +96,81 @@ end
 -- Reload all pfQuest internal database shortcuts
 pfDatabase:Reload()
 
+-- Trigger garbage collection to reclaim -turtle tables (~41MB)
+-- Lua 5.0: collectgarbage(0) forces immediate GC cycle
+collectgarbage(0)
+
+-- Reusable table and cached patterns for strsplit to reduce GC pressure
+local strsplit_buffer = {}
+local strsplit_patterns = {}
+
 local function strsplit(delimiter, subject)
   if not subject then return nil end
-  local delimiter, fields = delimiter or ":", {}
-  local pattern = string.format("([^%s]+)", delimiter)
-  string.gsub(subject, pattern, function(c) fields[table.getn(fields)+1] = c end)
-  return unpack(fields)
+  delimiter = delimiter or ":"
+  -- Cache pattern to avoid repeated string.format allocations
+  local pattern = strsplit_patterns[delimiter]
+  if not pattern then
+    pattern = "([^" .. delimiter .. "]+)"
+    strsplit_patterns[delimiter] = pattern
+  end
+  -- Clear and reuse buffer
+  local n = 0
+  string.gsub(subject, pattern, function(c)
+    n = n + 1
+    strsplit_buffer[n] = c
+  end)
+  -- Clear any leftover entries from previous calls
+  for i = n + 1, table.getn(strsplit_buffer) do
+    strsplit_buffer[i] = nil
+  end
+  return unpack(strsplit_buffer)
 end
 
--- Complete quest id including all pre quests
-local function complete(history, qid)
-  -- ignore empty or broken questid
-  if not qid or not tonumber(qid) then return end
+-- Shared default history entry to avoid allocating {0,0} for every quest
+local DEFAULT_HISTORY = { 0, 0 }
 
-  -- mark quest as complete
-  local time = pfQuest_history[qid] and pfQuest_history[qid][1] or 0
-  local level = pfQuest_history[qid] and pfQuest_history[qid][2] or 0
-  history[qid] = { time, level }
+-- Complete quest id including all pre quests (iterative to avoid stack overflow)
+local complete_queue = {}
+local function complete(history, start_qid)
+  -- Use iterative approach to avoid deep recursion on long quest chains
+  complete_queue[1] = start_qid
+  local head = 1
+  local tail = 1
 
-  -- complete all quests that are closed by the selcted one
-  local close = pfDB["quests"]["data"][qid] and pfDB["quests"]["data"][qid]["close"]
-  if close then
-    for _, qid in pairs(close) do
-      if not history[qid] then complete(history, qid) end
+  while head <= tail do
+    local qid = complete_queue[head]
+    head = head + 1
+
+    if qid and tonumber(qid) and not history[qid] then
+      -- mark quest as complete - share table for default values
+      local existing = pfQuest_history[qid]
+      if existing then
+        history[qid] = { existing[1] or 0, existing[2] or 0 }
+      else
+        history[qid] = DEFAULT_HISTORY
+      end
+
+      local data = pfDB["quests"]["data"][qid]
+      if data then
+        -- complete all quests that are closed by the selected one
+        if data["close"] then
+          for _, id in pairs(data["close"]) do
+            tail = tail + 1
+            complete_queue[tail] = id
+          end
+        end
+        -- make sure all prequests are marked as done as well
+        if data["pre"] then
+          for _, id in pairs(data["pre"]) do
+            tail = tail + 1
+            complete_queue[tail] = id
+          end
+        end
+      end
     end
   end
-
-  -- make sure all prequests are marked as done aswell
-  local prequests = pfDB["quests"]["data"][qid] and pfDB["quests"]["data"][qid]["pre"]
-  if prequests then
-    for _, qid in pairs(prequests) do
-      if not history[qid] then complete(history, qid) end
-    end
-  end
+  -- Clear queue for next use
+  for i = 1, tail do complete_queue[i] = nil end
 end
 
 -- Temporary workaround for a faction group translation error
@@ -117,8 +181,10 @@ query:Hide()
 
 query:SetScript("OnEvent", function()
   if arg1 == "TWQUEST" then
-    for _, qid in pairs({strsplit(" ", arg2)}) do
-      complete(this.history, tonumber(qid))
+    -- Avoid temp table by iterating the reused buffer directly
+    strsplit(" ", arg2)
+    for i = 1, table.getn(strsplit_buffer) do
+      complete(this.history, tonumber(strsplit_buffer[i]))
     end
   end
 end)
@@ -145,6 +211,10 @@ query:SetScript("OnHide", function()
 end)
 
 query:SetScript("OnUpdate", function()
+  -- Throttle to check twice per second instead of every frame
+  this.elapsed = (this.elapsed or 0) + arg1
+  if this.elapsed < 0.5 then return end
+  this.elapsed = 0
   if GetTime() > this.time + 3 then this:Hide() end
 end)
 
@@ -157,23 +227,19 @@ end
 local updatecheck = CreateFrame("Frame")
 updatecheck:RegisterEvent("PLAYER_ENTERING_WORLD")
 updatecheck:SetScript("OnEvent", function()
-  if pfDB["quests"]["data-turtle"] then
-    -- count all known turtle-wow quests
-    local count = 0
-    for k, v in pairs(pfDB["quests"]["data-turtle"]) do
-      count = count + 1
-    end
-
-    pfQuest:Debug("TurtleWoW loaded with |cff33ffcc" .. count .. "|r quests.")
+  if pfQuest_turtle_questcount > 0 then
+    pfQuest:Debug("TurtleWoW loaded with |cff33ffcc" .. pfQuest_turtle_questcount .. "|r quests.")
 
     -- check if the last count differs to the current amount of quests
-    if not pfQuest_turtlecount or pfQuest_turtlecount ~= count then
+    if not pfQuest_turtlecount or pfQuest_turtlecount ~= pfQuest_turtle_questcount then
       -- remove quest cache to force reinitialisation of all quests.
       pfQuest:Debug("New quests found. Reloading |cff33ffccCache|r")
       pfQuest_questcache = {}
     end
 
     -- write current count to the saved variable
-    pfQuest_turtlecount = count
+    pfQuest_turtlecount = pfQuest_turtle_questcount
   end
+  -- Unregister after first run - no need to check again
+  this:UnregisterEvent("PLAYER_ENTERING_WORLD")
 end)
