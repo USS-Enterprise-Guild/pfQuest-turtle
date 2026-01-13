@@ -1,0 +1,12 @@
+## Interface: 11200
+## Title: |cff33ffccpf|cffffffffQuest |cffcccccc[TurtleWoW deDE]
+## Notes: German locale data for pfQuest-turtle
+## LoadOnDemand: 1
+## Dependencies: pfQuest-turtle
+
+..\db\deDE\items-turtle.lua
+..\db\deDE\units-turtle.lua
+..\db\deDE\objects-turtle.lua
+..\db\deDE\quests-turtle.lua
+..\db\deDE\zones-turtle.lua
+..\db\deDE\professions-turtle.lua

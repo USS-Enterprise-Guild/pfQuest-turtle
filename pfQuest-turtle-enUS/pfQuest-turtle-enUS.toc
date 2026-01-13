@@ -1,0 +1,12 @@
+## Interface: 11200
+## Title: |cff33ffccpf|cffffffffQuest |cffcccccc[TurtleWoW enUS]
+## Notes: English locale data for pfQuest-turtle
+## LoadOnDemand: 1
+## Dependencies: pfQuest-turtle
+
+..\db\enUS\items-turtle.lua
+..\db\enUS\units-turtle.lua
+..\db\enUS\objects-turtle.lua
+..\db\enUS\quests-turtle.lua
+..\db\enUS\zones-turtle.lua
+..\db\enUS\professions-turtle.lua

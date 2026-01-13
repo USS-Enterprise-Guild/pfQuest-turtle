@@ -1,0 +1,7 @@
+## Interface: 11200
+## Title: |cff33ffccpf|cffffffffQuest |cffcccccc[TurtleWoW ruRU]
+## Notes: Russian locale data for pfQuest-turtle
+## LoadOnDemand: 1
+## Dependencies: pfQuest-turtle
+
+..\db\ruRU\quests-turtle.lua

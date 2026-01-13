@@ -1,7 +1,7 @@
 -- Initialize all static variables
 local loc = GetLocale()
 local dbs = { "items", "quests", "quests-itemreq", "objects", "units", "zones", "professions", "areatrigger", "refloot" }
-local noloc = { "items", "quests", "objects", "units" }
+local locale_dbs = { "items", "quests", "objects", "units", "zones", "professions" }
 
 -- Count turtle quests before cleanup (for cache invalidation)
 local pfQuest_turtle_questcount = 0
@@ -17,17 +17,9 @@ local function patchtable(base, diff)
   end
 end
 
--- Detect a typo from old clients and re-apply the typo to the zones table
--- This is a workaround which is required until all clients are updated
-for id, name in pairs({GetMapZones(2)}) do
-  if name == "Northwind " then
-    pfDB["zones"]["enUS-turtle"][5581] = "Northwind "
-  end
-end
-
-local loc_core, loc_update
+-- PHASE 1: Patch core data-turtle tables (non-localized)
 for _, db in pairs(dbs) do
-  if pfDB[db]["data-turtle"] then
+  if pfDB[db] and pfDB[db]["data-turtle"] then
     patchtable(pfDB[db]["data"], pfDB[db]["data-turtle"])
     -- Count quests during merge (before cleanup)
     if db == "quests" then
@@ -37,23 +29,6 @@ for _, db in pairs(dbs) do
     end
     pfDB[db]["data-turtle"] = nil  -- Cleanup immediately after merge
   end
-
-  for loc, _ in pairs(pfDB.locales) do
-    local loc_turtle = loc .. "-turtle"
-    if pfDB[db][loc] and pfDB[db][loc_turtle] then
-      loc_update = pfDB[db][loc_turtle] or pfDB[db]["enUS-turtle"]
-      patchtable(pfDB[db][loc], loc_update)
-    end
-    pfDB[db][loc_turtle] = nil  -- Cleanup all locale-turtle tables
-  end
-end
-
-loc_core = pfDB["professions"][loc] or pfDB["professions"]["enUS"]
-loc_update = pfDB["professions"][loc.."-turtle"] or pfDB["professions"]["enUS-turtle"]
-if loc_update then patchtable(loc_core, loc_update) end
--- Cleanup professions locale tables
-for loc, _ in pairs(pfDB.locales) do
-  pfDB["professions"][loc.."-turtle"] = nil
 end
 
 if pfDB["minimap-turtle"] then
@@ -63,6 +38,55 @@ end
 if pfDB["meta-turtle"] then
   patchtable(pfDB["meta"], pfDB["meta-turtle"])
   pfDB["meta-turtle"] = nil
+end
+
+-- PHASE 2: Load locale data on-demand (~20MB savings)
+-- Only load the user's locale instead of all 6 languages
+local locale_addon = "pfQuest-turtle-" .. loc
+local fallback_addon = "pfQuest-turtle-enUS"
+
+-- Try to load user's locale, fall back to enUS if not available
+if not IsAddOnLoaded(locale_addon) then
+  local loaded, reason = LoadAddOn(locale_addon)
+  if not loaded and loc ~= "enUS" then
+    -- Fallback to English if user's locale not available
+    LoadAddOn(fallback_addon)
+    locale_addon = fallback_addon
+  end
+end
+
+-- Also load enUS as fallback for missing translations
+if loc ~= "enUS" and not IsAddOnLoaded(fallback_addon) then
+  LoadAddOn(fallback_addon)
+end
+
+-- PHASE 3: Patch locale-turtle tables (only for loaded locales)
+-- Detect a typo from old clients and re-apply the typo to the zones table
+-- This is a workaround which is required until all clients are updated
+if pfDB["zones"]["enUS-turtle"] then
+  for id, name in pairs({GetMapZones(2)}) do
+    if name == "Northwind " then
+      pfDB["zones"]["enUS-turtle"][5581] = "Northwind "
+    end
+  end
+end
+
+-- Patch locale data for loaded locales only
+local loc_update
+for _, db in pairs(locale_dbs) do
+  if pfDB[db] then
+    -- Patch user's locale
+    local loc_turtle = loc .. "-turtle"
+    if pfDB[db][loc] and pfDB[db][loc_turtle] then
+      patchtable(pfDB[db][loc], pfDB[db][loc_turtle])
+      pfDB[db][loc_turtle] = nil
+    end
+    -- Patch enUS fallback if different from user's locale
+    if loc ~= "enUS" and pfDB[db]["enUS"] and pfDB[db]["enUS-turtle"] then
+      patchtable(pfDB[db]["enUS"], pfDB[db]["enUS-turtle"])
+      pfDB[db]["enUS-turtle"] = nil
+    end
+  end
 end
 
 -- Detect german client patch and switch some databases
