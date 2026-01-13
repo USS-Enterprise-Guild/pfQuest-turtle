@@ -93,10 +93,26 @@ function pfMap:HasMinimap(map_id)
   return has_minimap
 end
 
+-- Free unused locale tables to save memory (~20MB)
+-- Keep only user's locale and enUS as fallback (and deDE if TURTLE_DE_PATCH)
+local locales_to_keep = { [loc] = true, ["enUS"] = true }
+if TURTLE_DE_PATCH then locales_to_keep["deDE"] = true end
+local locale_dbs = { "items", "quests", "objects", "units", "zones", "professions" }
+
+for _, db in pairs(locale_dbs) do
+  if pfDB[db] then
+    for locale, _ in pairs(pfDB.locales) do
+      if not locales_to_keep[locale] and pfDB[db][locale] then
+        pfDB[db][locale] = nil
+      end
+    end
+  end
+end
+
 -- Reload all pfQuest internal database shortcuts
 pfDatabase:Reload()
 
--- Trigger garbage collection to reclaim -turtle tables (~41MB)
+-- Trigger garbage collection to reclaim freed tables (~60MB total)
 -- Lua 5.0: collectgarbage(0) forces immediate GC cycle
 collectgarbage(0)
 
